@@ -24,7 +24,7 @@
 const uint8_t my_key[] = { 0x38, 0x35, 0x31, 0x33 }; //Unique key from BRMesh app (found using USB debugging and adb logcat)
 byte mac[] = {0x14, 0x39, 0x28, 0x32, 0xa7, 0xb0}; // find in serial console upon reset, e.g. "start ESP32 DEVICEID - AABBCCDDEEFF"  (<-that's the MAC)
 
-const int redundancy = 5;  // Repeats sending each command to the lights this many times; BLE broadcasting was flakey  
+const int redundancy = 5;  // Repeats sending each command to the lights this many times; BLE broadcasting was flakey
 
 //no need to modify the next three lines
       WiFiClient client;
@@ -40,10 +40,10 @@ const int numLights = 4;
 
 HALight mylights[numLights] = {
   //add one line for each light.
-  HALight("1", HALight::BrightnessFeature | HALight::RGBFeature),
-  HALight("2", HALight::BrightnessFeature | HALight::RGBFeature),
-  HALight("3", HALight::BrightnessFeature | HALight::RGBFeature),
-  HALight("4", HALight::BrightnessFeature | HALight::RGBFeature)
+  HALight("1", HALight::BrightnessFeature | HALight::RGBFeature | HALight::ColorTemperatureFeature),
+  HALight("2", HALight::BrightnessFeature | HALight::RGBFeature | HALight::ColorTemperatureFeature),
+  HALight("3", HALight::BrightnessFeature | HALight::RGBFeature | HALight::ColorTemperatureFeature),
+  HALight("4", HALight::BrightnessFeature | HALight::RGBFeature | HALight::ColorTemperatureFeature)
 };
 
 String mylightnames[numLights] = {"Flood 1", "Flood 2", "Flood 3", "Flood 4"}; //These are the light names that will appear in Home Assistant
@@ -82,18 +82,18 @@ void setup() {
     // you don't need to verify return status
     WiFi.macAddress(mac);
 
-    
+
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     while (WiFi.status() != WL_CONNECTED) {
         delay(500); // waiting for the connection
     }
 
-        
+
     device.setName("BRMesh");
     device.setManufacturer("BRMesh");
     device.setModel("BRMesh");
 
-    for (int i=0; i<numLights; i++) 
+    for (int i=0; i<numLights; i++)
     {
         mylights[i].setName(mylightnames[i].c_str());
         mylights[i].onStateCommand(onStateCommand);
@@ -102,27 +102,23 @@ void setup() {
         mylights[i].onRGBColorCommand(onRGBColorCommand); // optional
         mylights[i].setBrightnessScale(127);
     }
-    
+
     Serial.println("Starting MQTT");
     mqtt.begin(MQTT_BROKER_ADDR, 1883, MQTT_BROKER_USER, MQTT_BROKER_PASS);
 
 }
 
-
-int extractInteger(const char* inputString) {
-    int result = -1;  // Default value or error indicator
-
-    // Assuming the format is "somestring %d"
-    int numRead = std::sscanf(inputString, "%*s %d", &result);
-
-    // Check if sscanf successfully read an integer
-    if (numRead == 1) {
-        return result;
-    } else {
-        // Handle the case where no integer was found
-        // You can throw an exception, return an error code, etc.
-        return -1;  // Adjust this value based on your error handling strategy
+int findIndex(String arr[], int size, String target) {
+  for (int i = 0; i < size; i++) {
+    if (arr[i].equals(target)) { // compare content
+      return i;
     }
+  }
+  return -1; // not found
+}
+
+int getLightNumber(const char* inputString) {
+    return findIndex(mylightnames, numLights, inputString) + 1;
 }
 
 
@@ -162,7 +158,7 @@ uint8_t package_ble_fastcon_body(int i, int i2, uint8_t sequence, uint8_t safe_k
   memcpy(payload + 4, data, length);
 
   uint8_t checksum = 0;
-  for (int j = 0; j < length + 4; j++) 
+  for (int j = 0; j < length + 4; j++)
   {
     if (j == 3) continue;
     checksum = (checksum + payload[j]) & 0xff;
@@ -251,7 +247,7 @@ uint16_t crc16(const uint8_t* addr, const uint8_t* data, uint8_t dataLength)
 {
   uint16_t crc = 0xffff;
 
-  for (int8_t i = addrLength - 1; i >= 0; i--) 
+  for (int8_t i = addrLength - 1; i >= 0; i--)
   {
     crc ^= addr[i] << 8;
     for (uint8_t ii = 0; ii < 4; ii++) {
@@ -275,7 +271,7 @@ uint16_t crc16(const uint8_t* addr, const uint8_t* data, uint8_t dataLength)
     for (uint8_t ii = 0; ii < 4; ii++) {
       uint16_t tmp = crc << 1;
 
-      if ((crc & 0x8000) != 0) 
+      if ((crc & 0x8000) != 0)
       {
         tmp ^= 0x1021;
       }
@@ -348,36 +344,25 @@ uint8_t do_generate_command(int i, const uint8_t* data, uint8_t length, const ui
   return rfPayloadLength-15;
 }
 
-void single_control(const uint8_t* key, const uint8_t* result)
-{
-
-
-   
-
+void single_control(const uint8_t* key, const uint8_t* result, uint8_t len){
   uint8_t ble_adv_data[] = { 0x02, 0x01, 0x1A, 0x1B, 0xFF, 0xF0, 0xFF };
   uint8_t* rfPayload = 0;
-  uint8_t rfPayloadLength = do_generate_command(5, result, 6, key, true /* forward ?*/, true /* use_default_adapter*/, 0, rfPayload);
 
+  uint8_t rfPayloadLength = do_generate_command(5, result, len, key, true, true, 0, rfPayload);
 
   uint8_t* advPacket = (uint8_t*)malloc(rfPayloadLength + sizeof(ble_adv_data));
   memcpy(advPacket, ble_adv_data, sizeof(ble_adv_data));
-  memcpy(advPacket+ sizeof(ble_adv_data), rfPayload, rfPayloadLength);
+  memcpy(advPacket + sizeof(ble_adv_data), rfPayload, rfPayloadLength);
   free(rfPayload);
 
   for (int i=0; i<redundancy; i++) {
     send(advPacket, rfPayloadLength + sizeof(ble_adv_data));
     delay(50);
   }
-  
-  
-  
   free(advPacket);
 }
 
-void send(uint8_t* data, uint8_t dataLength)
-{
-
-  
+void send(uint8_t* data, uint8_t dataLength){
   BLEBeacon oBeacon = BLEBeacon();
   oBeacon.setManufacturerId(0xf0ff); // fake Apple 0x004C LSB (ENDIAN_CHANGE_U16!)
   oBeacon.setProximityUUID(BLEUUID(BEACON_UUID));
@@ -387,7 +372,7 @@ void send(uint8_t* data, uint8_t dataLength)
   BLEAdvertisementData oScanResponseData = BLEAdvertisementData();
   oAdvertisementData.setFlags(0x04); // BR_EDR_NOT_SUPPORTED 0x04
   std::string strServiceData = "";
-  strServiceData += (char)(dataLength-4);     // Len  
+  strServiceData += (char)(dataLength-4);     // Len
   for (int i=4;i<dataLength;i++)
   {
     strServiceData += (char)data[i];
@@ -397,20 +382,14 @@ void send(uint8_t* data, uint8_t dataLength)
   pAdvertising->setAdvertisementData(oAdvertisementData);
   pAdvertising->setScanResponseData(oScanResponseData);
   pAdvertising->start();
-  delay(50);
+  delay(100);
   pAdvertising->stop();
 }
-
-
-//    uint8_t data[] = { 0x72, 0x00, 0xff, 0xff, 0x1d, 0xff };
-//    single_control(my_key, data);
-
-
 
 void onStateCommand(bool state, HALight* sender) {
     Serial.print("State: ");
     Serial.println(state);
-    
+
     uint8_t data[] = { 0x22, 0x00, 0xff, 0x00, 0x00, 0x00 };
 
     if (! state) {
@@ -419,10 +398,9 @@ void onStateCommand(bool state, HALight* sender) {
       data[2] = 0x80;
     }
 
-    data[1] = extractInteger(sender->getName());
-    
-    single_control(my_key, data);
-    
+    data[1] = getLightNumber(sender->getName());
+
+    single_control(my_key, data, 6);
 
     sender->setState(state); // report state back to the Home Assistant
 }
@@ -433,14 +411,12 @@ void onBrightnessCommand(uint8_t brightness, HALight* sender) {
     Serial.print("Light:");
     Serial.print(sender->getName());
 
-
     uint8_t data[] = { 0x22, 0x00, 0xff, 0x00, 0x00, 0x00 };
 
     data[2] = brightness & 127;
-    data[1] = extractInteger(sender->getName());
+    data[1] = getLightNumber(sender->getName());
 
-    single_control(my_key, data);
-    
+    single_control(my_key, data, 6);
 
     sender->setBrightness(brightness); // report brightness back to the Home Assistant
 }
@@ -448,6 +424,28 @@ void onBrightnessCommand(uint8_t brightness, HALight* sender) {
 void onColorTemperatureCommand(uint16_t temperature, HALight* sender) {
     Serial.print("Color temperature: ");
     Serial.println(temperature);
+
+    uint8_t data[] = { 0x72, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00 };
+
+    //ID:
+    data[1] = getLightNumber(sender->getName());
+    data[2] = sender->getCurrentBrightness() & 127;
+
+    if(temperature >= 372){
+      data[3] = 0;
+      data[4] = 255;
+      data[5] = 128 - (temperature - 372);
+    }else if(temperature >= 345){
+      data[3] = 27 - (temperature - 345);
+      data[4] = 255;
+      data[5] = 128;
+    }else{
+      // warm white
+      data[6] = 0x7f;
+      data[7] = 0x7f;
+    }
+
+    single_control(my_key, data, 8);
 
     sender->setColorTemperature(temperature); // report color temperature back to the Home Assistant
 }
@@ -462,28 +460,22 @@ void onRGBColorCommand(HALight::RGBColor color, HALight* sender) {
     Serial.print("Blue: ");
     Serial.println(color.blue);
 
-    
-
     uint8_t data[] = { 0x72, 0x00, 0xff, 0x00, 0x00, 0x00 };
-    
-    //ID: 
-    data[1] = extractInteger(sender->getName());
+
+    //ID:
+    data[1] = getLightNumber(sender->getName());
     data[2] = sender->getCurrentBrightness() & 127;
     data[3] = color.blue;
     data[4] = color.red;
     data[5] = color.green;
-    
-    
-    single_control(my_key, data);
-    
-    
 
+    single_control(my_key, data, 6);
     sender->setRGBColor(color); // report color back to the Home Assistant
 }
 
 
 
-void loop() 
+void loop()
 {
     mqtt.loop();
 }
